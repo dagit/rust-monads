@@ -14,12 +14,15 @@ fn main() {
     let a = Cont::<i32, i32>::pure(1);
     let b = a.bind(|x: i32| Cont::pure(x + x));
     println!("b = {}", eval_cont(b));
-    let c = call_cc(|exit1| {
-        let p = Cont::pure(1);
-        let e = p.bind(move |_: i32| exit1('a'));
-        e
-    });
-    println!("c = {:#?}", eval_cont(c));
+    fn foo<'a>() {
+        let c = call_cc(|exit1| {
+            let p = Cont::pure(1);
+            let e = p.bind(move |_: i32| exit1('a'));
+            e
+        });
+        println!("c = {:#?}", eval_cont(c));
+    }
+    foo()
 }
 //pub fn bind<B, K>(&self, k: K) -> Cont<R, B>
 //where
@@ -57,9 +60,11 @@ impl<'a, R, A> Cont<'a, R, A> {
             run: Rc::new(move |c: Rc<dyn Fn(A) -> R>| c(a.clone())),
         }
     }
-    pub fn bind<B, K>(&self, k: K) -> Cont<R, B>
+    pub fn bind<B, K>(self, k: K) -> Cont<'a, R, B>
     where
         K: Fn(A) -> Cont<'a, R, B> + 'a,
+        A: 'a,
+        R: 'a,
     {
         Cont {
             run: Rc::new(move |c: Rc<dyn Fn(B) -> R>| {
@@ -89,18 +94,17 @@ where
     Cont { run: runit }
 }
 
-
-fn call_cc_outer<'a, A, B, R, F>(f: F) -> Rc<dyn for <'b> Fn(Rc<dyn Fn(A) -> R + 'b>) -> R + 'a>
-where F: for<'b> Fn(Rc<dyn Fn(A) -> Cont<'b, R, B> + 'b>) -> Cont<'a, R, A> + 'a,
-      A: Clone + 'a,
-      R: 'a,
+fn call_cc_outer<'a, A, B, R, F>(f: F) -> Rc<dyn for<'b> Fn(Rc<dyn Fn(A) -> R + 'b>) -> R + 'a>
+where
+    F: for<'b> Fn(Rc<dyn Fn(A) -> Cont<'b, R, B> + 'b>) -> Cont<'a, R, A> + 'a,
+    A: Clone + 'a,
+    R: 'a,
 {
     Rc::new(move |c: Rc<dyn Fn(A) -> R>| -> R {
         let inner = call_cc_inner(c.clone());
         (f(inner).run)(c)
     })
 }
-
 
 fn call_cc_inner<'a, A, B, R>(c: Rc<dyn Fn(A) -> R + 'a>) -> Rc<dyn Fn(A) -> Cont<'a, R, B> + 'a>
 where
