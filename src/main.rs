@@ -14,11 +14,17 @@ fn main() {
     let a = Cont::<i32, i32>::pure(1);
     let b = a.bind(|x: i32| Cont::pure(x + x));
     println!("b = {}", b.eval_cont());
+    let c = call_cc(|exit1| {
+        Cont::pure(1)
+            .bind(move |_: i32| exit1('a'))
+            .bind(|_: i32| unimplemented!())
+    });
+    println!("c = {:#?}", c.eval_cont());
+    // We can also do a nested exit
     let c = call_cc(|exit1| -> Cont<'_, char, char> {
-        let p = Cont::pure(1);
-        let e = p.bind(move |_: i32| exit1('a'));
-        let d: Cont<'_, char, char> = e.clone().bind(|_: char| unimplemented!());
-        d
+        let exit1_clone = exit1.clone();
+        call_cc(move |_: Rc<dyn Fn(char) -> Cont<'static, char, char>>| exit1('c'))
+            .bind(move |_: char| exit1_clone('b'))
     });
     println!("c = {:#?}", c.eval_cont());
 }
