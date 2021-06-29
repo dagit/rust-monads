@@ -14,16 +14,13 @@ fn main() {
     let a = Cont::<i32, i32>::pure(1);
     let b = a.bind(|x: i32| Cont::pure(x + x));
     println!("b = {}", b.eval_cont());
-    fn foo<'two, 'one: 'two>() {
-        let c = call_cc(|exit1| -> Cont<'_, char, char> {
-            let p = Cont::pure(1);
-            let e = p.bind(move |_: i32| exit1('a'));
-            let d: Cont<'_, char, char> = e.clone().bind(|_: char| unimplemented!());
-            d
-        });
-        println!("c = {:#?}", c.eval_cont());
-    }
-    foo()
+    let c = call_cc(|exit1| -> Cont<'_, char, char> {
+        let p = Cont::pure(1);
+        let e = p.bind(move |_: i32| exit1('a'));
+        let d: Cont<'_, char, char> = e.clone().bind(|_: char| unimplemented!());
+        d
+    });
+    println!("c = {:#?}", c.eval_cont());
 }
 
 #[derive(Clone)]
