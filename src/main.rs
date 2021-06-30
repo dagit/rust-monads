@@ -22,59 +22,59 @@ fn main() {
     });
     println!("c = {:#?}", c.eval_cont());
     // We can also do a nested exit
-    let c = call_cc(|exit1| -> Cont<'_, char, char> {
+    let c = call_cc(|exit1| -> Cont<char, char> {
         let exit1_clone = exit1.clone();
-        call_cc(move |_: Rc<dyn Fn(char) -> Cont<'static, char, char>>| exit1('c'))
+        call_cc(move |_: Rc<dyn Fn(char) -> Cont<char, char>>| exit1('c'))
             .bind(move |_: char| exit1_clone('b'))
     });
     println!("c = {:#?}", c.eval_cont());
 }
 
 #[derive(Clone)]
-pub struct Cont<'a, R, A> {
+pub struct Cont<R, A> {
     //run: (a -> r) -> r
-    pub run: Rc<dyn Fn(Rc<dyn Fn(A) -> R + 'a>) -> R + 'a>,
+    pub run: Rc<dyn Fn(Rc<dyn Fn(A) -> R>) -> R>,
 }
 
-impl<'a, R, A> Cont<'a, R, A> {
+impl<R, A> Cont<R, A> {
     ///cont :: ((a -> r) -> r) -> Cont r a
-    pub fn cont<F>(f: F) -> Cont<'a, R, A>
+    pub fn cont<F>(f: F) -> Cont<R, A>
     where
-        F: Fn(Rc<dyn Fn(A) -> R + 'a>) -> R + 'a,
+        F: Fn(Rc<dyn Fn(A) -> R>) -> R + 'static,
     {
         Cont { run: Rc::new(f) }
     }
-    pub fn fmap<B, F>(self, f: F) -> Cont<'a, R, B>
+    pub fn fmap<B, F>(self, f: F) -> Cont<R, B>
     where
-        F: Fn(A) -> B + 'a + Clone,
-        A: 'a,
-        B: 'a,
-        R: 'a,
+        F: Fn(A) -> B + Clone + 'static,
+        A: 'static,
+        B: 'static,
+        R: 'static,
     {
         //fmap f m = Cont $ \c -> run (c . f)
         //         = Cont (\c -> run (c . f))
         //         = Cont (\c -> run (\a -> c (f a)))
         Cont {
-            run: Rc::new(move |c: Rc<dyn Fn(B) -> R + 'a>| {
+            run: Rc::new(move |c: Rc<dyn Fn(B) -> R>| {
                 let f = f.clone();
                 (self.run)(Rc::new(move |a: A| c(f(a))))
             }),
         }
     }
-    pub fn pure(a: A) -> Cont<'a, R, A>
+    pub fn pure(a: A) -> Cont<R, A>
     where
-        A: 'a + Clone,
+        A: 'static + Clone,
     {
         Cont {
             run: Rc::new(move |c: Rc<dyn Fn(A) -> R>| c(a.clone())),
         }
     }
-    pub fn bind<B, K>(self, k: K) -> Cont<'a, R, B>
+    pub fn bind<B, K>(self, k: K) -> Cont<R, B>
     where
-        K: Fn(A) -> Cont<'a, R, B> + 'a + Clone,
-        A: 'a,
-        R: 'a,
-        B: 'a,
+        K: Fn(A) -> Cont<R, B> + Clone + 'static,
+        A: 'static,
+        B: 'static,
+        R: 'static,
     {
         Cont {
             run: Rc::new(move |c: Rc<dyn Fn(B) -> R>| {
@@ -85,33 +85,34 @@ impl<'a, R, A> Cont<'a, R, A> {
     }
     pub fn run_cont<F>(self, f: F) -> R
     where
-        F: Fn(A) -> R + 'a,
+        F: Fn(A) -> R + 'static,
     {
         (self.run)(Rc::new(move |a: A| f(a)))
     }
 }
-impl<'a, R> Cont<'a, R, R> {
+impl<R> Cont<R, R> {
     pub fn eval_cont(self) -> R {
         self.run_cont(|r: R| r)
     }
 }
 
-pub fn call_cc<'a, A, B, R, F>(f: F) -> Cont<'a, R, A>
+pub fn call_cc<A, B, R, F>(f: F) -> Cont<R, A>
 where
-    F: for<'b> Fn(Rc<dyn Fn(A) -> Cont<'a, R, B> + 'a>) -> Cont<'a, R, A> + 'a,
-    R: 'a + Clone,
-    A: 'a + Clone,
+    F: Fn(Rc<dyn Fn(A) -> Cont<R, B>>) -> Cont<R, A> + 'static,
+    R: Clone,
+    A: Clone + 'static,
+    R: 'static,
 {
     /* callCC f = ContT $ \ c -> runContT (f (\ x -> ContT $ \ _ -> c x)) c */
     let runit = call_cc_outer(f);
     Cont { run: runit }
 }
 
-fn call_cc_outer<'a, A, B, R, F>(f: F) -> Rc<dyn for<'b> Fn(Rc<dyn Fn(A) -> R + 'a>) -> R + 'a>
+fn call_cc_outer<A, B, R, F>(f: F) -> Rc<dyn Fn(Rc<dyn Fn(A) -> R>) -> R>
 where
-    F: for<'b> Fn(Rc<dyn Fn(A) -> Cont<'a, R, B> + 'a>) -> Cont<'a, R, A> + 'a,
-    A: Clone + 'a,
-    R: 'a,
+    F: Fn(Rc<dyn Fn(A) -> Cont<R, B>>) -> Cont<R, A> + 'static,
+    A: Clone + 'static,
+    R: 'static,
 {
     Rc::new(move |c| {
         let inner = call_cc_inner(c.clone());
@@ -119,10 +120,10 @@ where
     })
 }
 
-fn call_cc_inner<'a, A, B, R>(c: Rc<dyn Fn(A) -> R + 'a>) -> Rc<dyn Fn(A) -> Cont<'a, R, B> + 'a>
+fn call_cc_inner<A, B, R>(c: Rc<dyn Fn(A) -> R>) -> Rc<dyn Fn(A) -> Cont<R, B>>
 where
-    A: 'a + Clone,
-    R: 'a,
+    A: Clone + 'static,
+    R: 'static,
 {
     Rc::new(move |a: A| {
         let c = c.clone();
@@ -136,12 +137,13 @@ where
 // i x = cont (\fred -> x >>= fred)
 // where cont f = Cont { run: f }
 // i :: Monad m => m a -> Cont (m b) a
-pub fn lift<'a, A, B, M, F>(m: This<M, A>) -> Cont<'a, This<M, B>, A>
+pub fn lift<A, B, M, F>(m: This<M, A>) -> Cont<This<M, B>, A>
 where
-    M: Monad<'a, A, B> + 'a + Clone,
-    This<M, A>: Clone,
-    A: Clone + 'a,
-    B: Clone + 'a,
+    M: Monad<A, B> + Clone,
+    This<M, A>: Clone + 'static,
+    A: Clone + 'static,
+    B: Clone,
+    This<M, B>: 'static,
 {
     Cont::cont(move |f| {
         let m = m.clone();
@@ -155,50 +157,49 @@ pub trait Family<A> {
     type This;
 }
 
-pub trait Functor<'a, A, B>: Family<A> + Family<B> {
+pub trait Functor<A, B>: Family<A> + Family<B> {
     fn map<F>(f: F, this: This<Self, A>) -> This<Self, B>
     where
-        F: Fn(A) -> B + 'a + Clone,
-        A: 'a,
-        B: 'a;
+        F: Fn(A) -> B + Clone + 'static;
 }
 
-pub trait Pure<'a, A>: Family<A> {
+pub trait Pure<A>: Family<A> {
     fn pure(value: A) -> This<Self, A>
     where
-        A: 'a + Clone;
+        A: Clone;
 }
 
-pub trait Applicative<'a, A, B>: Functor<'a, A, B> + Pure<'a, A> + Pure<'a, B> {
+pub trait Applicative<A, B>: Functor<A, B> + Pure<A> + Pure<B> {
     fn apply<F>(a: This<Self, F>, b: This<Self, A>) -> This<Self, B>
     where
-        F: Fn(A) -> B + 'a + Clone,
-        Self: Applicative<'a, F, A>,
-        A: 'a + Clone,
-        B: 'a + Clone,
+        F: Fn(A) -> B + Clone,
+        Self: Applicative<F, A>,
+        A: Clone,
+        B: Clone + 'static,
     {
         Self::lift_a2(move |q: F, r| q(r), a, b)
     }
 
     fn lift_a2<C, F>(f: F, a: This<Self, A>, b: This<Self, B>) -> This<Self, C>
     where
-        F: Fn(A, B) -> C + 'a + Clone,
-        Self: Pure<'a, C>,
+        F: Fn(A, B) -> C + Clone + 'static,
+        Self: Pure<C>,
         Self: Family<C>,
-        A: 'a + Clone,
-        B: 'a + Clone,
-        C: 'a + Clone;
+        A: Clone,
+        B: Clone,
+        C: Clone + 'static;
 }
 
-pub trait Monad<'a, A, B>: Applicative<'a, A, B> {
+pub trait Monad<A, B>: Applicative<A, B> {
     fn bind<F>(a: This<Self, A>, f: F) -> This<Self, B>
     where
-        F: Fn(A) -> This<Self, B> + Clone + 'a;
+        F: Fn(A) -> This<Self, B> + Clone + 'static;
     fn compose<F, G, C>(f: F, g: G, a: A) -> This<Self, C>
     where
-        F: FnOnce(A) -> This<Self, B>,
-        G: Fn(B) -> This<Self, C> + Clone + 'a,
-        Self: Monad<'a, B, C>,
+        F: FnOnce(A) -> This<Self, B> + 'static,
+        G: Fn(B) -> This<Self, C> + Clone + 'static,
+        Self: Monad<B, C>,
+        This<Self, C>: 'static,
     {
         Self::bind(f(a), g)
     }
@@ -206,35 +207,37 @@ pub trait Monad<'a, A, B>: Applicative<'a, A, B> {
 
 #[phantom]
 #[derive(Clone, Copy)]
-pub struct ContFamily<'a, R>;
+pub struct ContFamily<R>;
 
-impl<'a, R: 'a, A: 'a> Family<A> for ContFamily<'a, R> {
-    type This = Cont<'a, R, A>;
+impl<R, A> Family<A> for ContFamily<R> {
+    type This = Cont<R, A>;
 }
 
-impl<'a, R: 'a, A: 'a> Pure<'a, A> for ContFamily<'a, R> {
+impl<R, A: 'static> Pure<A> for ContFamily<R> {
     fn pure(value: A) -> This<Self, A>
     where
-        A: Clone + 'a,
+        A: Clone + 'static,
     {
         Cont::pure(value)
     }
 }
 
-impl<'a, R: 'a, A: 'a, B: 'a> Functor<'a, A, B> for ContFamily<'a, R> {
+impl<R: 'static, A: 'static, B: 'static> Functor<A, B> for ContFamily<R> {
     fn map<F>(f: F, this: This<Self, A>) -> This<Self, B>
     where
-        F: Fn(A) -> B + 'a + Clone,
+        F: Fn(A) -> B + Clone + 'static,
     {
         this.fmap(f)
     }
 }
 
-impl<'a, R: 'a + Clone, A: 'a + Clone, B: 'a + Clone> Applicative<'a, A, B> for ContFamily<'a, R> {
+impl<R: Clone + 'static, A: Clone + 'static, B: Clone + 'static> Applicative<A, B>
+    for ContFamily<R>
+{
     fn lift_a2<C, F>(f: F, a: This<Self, A>, b: This<Self, B>) -> This<Self, C>
     where
-        F: Fn(A, B) -> C + 'a + Clone,
-        C: 'a + Clone,
+        F: Fn(A, B) -> C + Clone + 'static,
+        C: Clone + 'static,
     {
         a.bind(move |x: A| {
             let f = f.clone();
@@ -247,15 +250,15 @@ impl<'a, R: 'a + Clone, A: 'a + Clone, B: 'a + Clone> Applicative<'a, A, B> for 
     }
 }
 
-impl<'a, A, B, R> Monad<'a, A, B> for ContFamily<'a, R>
+impl<A: 'static, B: 'static, R: 'static> Monad<A, B> for ContFamily<R>
 where
-    R: Clone + 'a,
-    A: Clone + 'a,
-    B: Clone + 'a,
+    R: Clone,
+    A: Clone,
+    B: Clone,
 {
     fn bind<K>(a: This<Self, A>, k: K) -> This<Self, B>
     where
-        K: Fn(A) -> Cont<'a, R, B> + 'a + Clone,
+        K: Fn(A) -> Cont<R, B> + Clone + 'static,
     {
         Cont::bind(a, k)
     }
