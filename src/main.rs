@@ -28,6 +28,131 @@ fn main() {
             .bind(move |_: char| exit1_clone('b'))
     });
     println!("c = {:#?}", c.eval_cont());
+
+    let c = mdo! {
+        pure 1;
+    };
+    println!("c = {:#?}", c.eval_cont());
+    let c: Cont<'_, i32, i32> = mdo! {
+        a <- pure 1;
+        pure a;
+    };
+    println!("c = {:#?}", c.eval_cont());
+}
+
+#[test]
+fn ex1() {
+    let ex = mdo! {
+        a <- pure 1;
+        b <- pure 10;
+        pure (a+b);
+    };
+    println!("{}", ex.run_cont(|x| { format!("{:#?}", x) }));
+}
+
+#[test]
+fn ex2() {
+    let ex = mdo! {
+        a <- pure 1;
+        b <- Cont::cont(|fred| fred(10));
+        pure (a+b);
+    };
+    println!("{}", ex.run_cont(|x| { format!("{:#?}", x) }));
+}
+
+#[test]
+fn ex3() {
+    let ex = mdo! {
+        a <- pure 1;
+        b <- Cont::cont(|_fred: Rc<dyn Fn(i32) -> _>| "escape".into());
+        pure (a+b);
+    };
+    println!("{}", ex.run_cont(|x| { format!("{:#?}", x) }));
+}
+
+#[test]
+fn ex4() {
+    let ex = mdo! {
+        a <- pure 1;
+        b <- Cont::cont(|fred: Rc<dyn Fn(i32) -> String>| {
+            fred(10) + &fred(20)
+        });
+        pure (a+b);
+    };
+    println!("{}", ex.run_cont(|x| { format!("{:#?}", x) }));
+}
+
+#[test]
+fn ex6() {
+    let ex = mdo! {
+        a <- pure 1;
+        b <- Cont::cont(|fred: Rc<dyn Fn(i32) -> Vec<i32>>| {
+            let mut f = fred(10);
+            f.extend(fred(20).into_iter());
+            f
+        });
+        pure (a+b);
+    };
+    println!("{}", DisplayVec(ex.run_cont(|x| vec![x])));
+}
+
+#[test]
+fn ex8() {
+    let ex = mdo! {
+        a <- pure 1;
+        b <- Cont::cont(|fred: Rc<dyn Fn(i32) -> Vec<i32>>| {
+            VecFamily::bind(vec![10,20], &*fred)
+        });
+        pure (a+b);
+    };
+    println!("{}", DisplayVec(ex.run_cont(|x| vec![x])));
+}
+
+#[test]
+fn ex9() {
+    let ex: Cont<'_, Vec<i32>, i32> = mdo! {
+        (a:i32) <- lift(VecFamily, vec![1,2]);
+        b <- lift(VecFamily, vec![10,20]);
+        pure (a+b);
+    };
+    println!("{}", DisplayVec::<i32>(run(VecFamily, ex)));
+}
+
+#[test]
+fn ex10() {
+    // TODO: calling this identity is actually really weird...
+    let ex: Cont<'_, Identity<()>, ()> = mdo! {
+        lift(IdentityFamily, Identity(println!("What is your name?")));
+        name <- lift(IdentityFamily, {
+            let mut input = String::new();
+            match std::io::stdin().read_line(&mut input) {
+                Ok(_) => Identity(input),
+                Err(_) => panic!(),
+            }
+        });
+        lift(IdentityFamily, Identity(println!("Merry Xmas {}", name)));
+        pure ();
+    };
+    println!("{}", run(IdentityFamily, ex));
+}
+
+#[derive(Debug)]
+struct DisplayVec<A>(pub Vec<A>);
+
+impl<A> std::fmt::Display for DisplayVec<A>
+where
+    A: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let elements = self
+            .0
+            .iter()
+            .map(|x| format!("{:#?}", x))
+            .collect::<Vec<String>>()
+            .join(", ");
+        writeln!(f, "[{}]", elements)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -87,7 +212,7 @@ impl<'a, R, A> Cont<'a, R, A> {
     where
         F: Fn(A) -> R + 'a,
     {
-        (self.run)(Rc::new(move |a: A| f(a)))
+        (self.run)(Rc::new(f))
     }
 }
 impl<'a, R> Cont<'a, R, R> {
@@ -136,7 +261,7 @@ where
 // i x = cont (\fred -> x >>= fred)
 // where cont f = Cont { run: f }
 // i :: Monad m => m a -> Cont (m b) a
-pub fn lift<'a, A, B, M, F>(m: This<M, A>) -> Cont<'a, This<M, B>, A>
+pub fn lift<'a, A, B, M>(_: M, m: This<M, A>) -> Cont<'a, This<M, B>, A>
 where
     M: Monad<'a, A, B> + 'a + Clone,
     This<M, A>: Clone,
@@ -147,6 +272,14 @@ where
         let m = m.clone();
         M::bind(m, move |a: A| f(a))
     })
+}
+
+pub fn run<'a, A, M>(_: M, m: Cont<'a, This<M, A>, A>) -> This<M, A>
+where
+    M: Monad<'a, A, A> + 'a,
+    A: Clone + 'a,
+{
+    Cont::run_cont(m, M::pure)
 }
 
 // Heavily borrowed from here: https://github.com/RustyYato/type-families
@@ -258,5 +391,205 @@ where
         K: Fn(A) -> Cont<'a, R, B> + 'a + Clone,
     {
         Cont::bind(a, k)
+    }
+}
+
+//Heavily borrowed from the do_notation crate, but I feel like I need to rewrite it from
+//scratch as it doesn't handle a lot of things that you want it to.
+#[macro_export]
+macro_rules! mdo {
+  // return
+  (pure $r:expr ;) => {
+    $crate::Cont::pure($r)
+  };
+
+  // let-binding
+  (let $p:pat = $e:expr ; $($r:tt)*) => {{
+    let $p = $e;
+    mdo!($($r)*)
+  }};
+
+  // const-bind
+  (_ <- $x:expr ; $($r:tt)*) => {
+    $crate::Cont::bind($x, move |_| { mdo!($($r)*) })
+  };
+
+  // const-bind
+  (_ <- pure $p:expr ; $($r:tt)*) => {
+    $crate::Cont::bind($crate::Cont::pure($p), move |_| { mdo!($($r)*) })
+  };
+
+  // bind
+  ($binding:ident <- $x:expr ; $($r:tt)*) => {
+    $crate::Cont::bind($x, move |$binding| { mdo!($($r)*) })
+  };
+
+  // bind
+  ( ($binding:ident : $type:ty) <- $x:expr ; $($r:tt)*) => {
+    $crate::Cont::bind($x, move |$binding:$type| { mdo!($($r)*) })
+  };
+
+  // bind
+  ($binding:ident <- pure $x:expr ; $($r:tt)*) => {
+    $crate::Cont::bind($crate::Cont::pure($x), move |$binding| { mdo!($($r)*) })
+  };
+
+  // const-bind
+  ($e:expr ; $($a:tt)*) => {
+    $crate::Cont::bind($e, move |_| mdo!($($a)*))
+  };
+
+  // const-bind
+  (pure $e:expr ; $($a:tt)*) => {
+    $crate::Cont::bind($crate::Cont::pure($e), move |_| mdo!($($a)*))
+  };
+
+  // pure
+  ($a:expr) => {
+    $a
+  }
+}
+
+#[derive(Clone, Copy)]
+pub struct OptionFamily;
+
+impl<A> Family<A> for OptionFamily {
+    type This = Option<A>;
+}
+
+impl<'a, A> Pure<'a, A> for OptionFamily {
+    fn pure(value: A) -> This<Self, A> {
+        Some(value)
+    }
+}
+
+impl<'a, A, B> Functor<'a, A, B> for OptionFamily {
+    fn map<F>(f: F, this: This<Self, A>) -> This<Self, B>
+    where
+        F: Fn(A) -> B + Clone,
+    {
+        this.map(f)
+    }
+}
+
+impl<'a, A, B> Applicative<'a, A, B> for OptionFamily {
+    fn lift_a2<C, F>(f: F, a: This<Self, A>, b: This<Self, B>) -> This<Self, C>
+    where
+        F: Fn(A, B) -> C,
+    {
+        match (a, b) {
+            (Some(x), Some(y)) => Some(f(x, y)),
+            _ => None,
+        }
+    }
+}
+
+impl<'a, A, B> Monad<'a, A, B> for OptionFamily {
+    fn bind<K>(a: This<Self, A>, k: K) -> This<Self, B>
+    where
+        K: Fn(A) -> Option<B>,
+    {
+        a.and_then(k)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct VecFamily;
+
+impl<A> Family<A> for VecFamily {
+    type This = Vec<A>;
+}
+
+impl<'a, A> Pure<'a, A> for VecFamily {
+    fn pure(value: A) -> This<Self, A> {
+        vec![value]
+    }
+}
+
+impl<'a, A, B> Functor<'a, A, B> for VecFamily {
+    fn map<F>(f: F, this: This<Self, A>) -> This<Self, B>
+    where
+        F: Fn(A) -> B + Clone,
+    {
+        this.into_iter().map(f).collect()
+    }
+}
+
+impl<'a, A, B> Applicative<'a, A, B> for VecFamily {
+    fn lift_a2<C, F>(f: F, a: This<Self, A>, b: This<Self, B>) -> This<Self, C>
+    where
+        F: Fn(A, B) -> C + Clone,
+        C: Clone,
+        A: Clone,
+        B: Clone,
+    {
+        a.into_iter()
+            .flat_map(move |x| {
+                let f = f.clone();
+                let b = b.clone();
+                b.into_iter().flat_map(move |y| vec![f(x.clone(), y)])
+            })
+            .collect()
+    }
+}
+
+impl<'a, A, B> Monad<'a, A, B> for VecFamily {
+    fn bind<K>(a: This<Self, A>, k: K) -> This<Self, B>
+    where
+        K: Fn(A) -> Vec<B>,
+    {
+        a.into_iter().flat_map(k).collect()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct IdentityFamily;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Identity<A>(A);
+
+impl<A: std::fmt::Debug> std::fmt::Display for Identity<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#?}", self.0)
+    }
+}
+
+impl<A> Family<A> for IdentityFamily {
+    type This = Identity<A>;
+}
+
+impl<'a, A> Pure<'a, A> for IdentityFamily {
+    fn pure(value: A) -> This<Self, A> {
+        Identity(value)
+    }
+}
+
+impl<'a, A, B> Functor<'a, A, B> for IdentityFamily {
+    fn map<F>(f: F, this: This<Self, A>) -> This<Self, B>
+    where
+        F: Fn(A) -> B + Clone,
+    {
+        Identity(f(this.0))
+    }
+}
+
+impl<'a, A, B> Applicative<'a, A, B> for IdentityFamily {
+    fn lift_a2<C, F>(f: F, a: This<Self, A>, b: This<Self, B>) -> This<Self, C>
+    where
+        F: Fn(A, B) -> C + Clone,
+        C: Clone,
+        A: Clone,
+        B: Clone,
+    {
+        Identity(f(a.0, b.0))
+    }
+}
+
+impl<'a, A, B> Monad<'a, A, B> for IdentityFamily {
+    fn bind<K>(a: This<Self, A>, k: K) -> This<Self, B>
+    where
+        K: Fn(A) -> Identity<B>,
+    {
+        k(a.0)
     }
 }
