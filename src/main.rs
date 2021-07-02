@@ -38,6 +38,7 @@ fn main() {
         pure a;
     };
     println!("c = {:#?}", c.eval_cont());
+    ex10();
 }
 
 #[test]
@@ -118,22 +119,23 @@ fn ex9() {
     println!("{}", DisplayVec::<i32>(run(VecFamily, ex)));
 }
 
-#[test]
 fn ex10() {
     // TODO: calling this identity is actually really weird...
     let ex: Cont<'_, Identity<()>, ()> = mdo! {
-        lift(IdentityFamily, Identity(println!("What is your name?")));
-        name <- lift(IdentityFamily, {
-            let mut input = String::new();
-            match std::io::stdin().read_line(&mut input) {
-                Ok(_) => Identity(input),
-                Err(_) => panic!(),
-            }
-        });
+        lift(IdentityFamily, IdentityFamily::pure(println!("What is your name?")));
+        name <- lift(IdentityFamily, IdentityFamily::pure(get_line()));
         lift(IdentityFamily, Identity(println!("Merry Xmas {}", name)));
         pure ();
     };
     println!("{}", run(IdentityFamily, ex));
+}
+
+pub fn get_line() -> String {
+    let mut input = String::new();
+    match std::io::stdin().read_line(&mut input) {
+        Ok(_) => input,
+        Err(_) => panic!(),
+    }
 }
 
 #[derive(Debug)]
