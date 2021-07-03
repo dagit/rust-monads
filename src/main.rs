@@ -122,9 +122,9 @@ fn ex9() {
 fn ex10() {
     // TODO: calling this identity is actually really weird...
     let ex: Cont<'_, Identity<()>, ()> = mdo! {
-        lift(IdentityFamily, IdentityFamily::pure(println!("What is your name?")));
-        name <- lift(IdentityFamily, IdentityFamily::pure(get_line()));
-        lift(IdentityFamily, Identity(println!("Merry Xmas {}", name)));
+        lift_i(monad_identity(), pure_i(println!("What is your name?")));
+        name <- lift_i(monad_identity(), pure_i(get_line()));
+        lift_i(monad_identity(), pure_i(println!("Merry Xmas {}", name)));
         pure ();
     };
     println!("{}", run(IdentityFamily, ex));
@@ -625,11 +625,12 @@ pub fn pure_identity<A>() -> PureI<Identity<A>> {
     }
 }
 
-pub trait FunctorT<A, B>: TyLink<A> + TyLink<B> {}
-pub struct FunctorI<A, B, I: FunctorT<A, B>> {
-    pub map: fn(R<I, A>, f: &dyn Fn(A) -> B) -> R<I, B>,
+pub struct FunctorI<A, B, M>
+where
+    M: TyLink<A> + TyLink<B>,
+{
+    pub map: fn(R<M, A>, f: &dyn Fn(A) -> B) -> R<M, B>,
 }
-impl<A, B> FunctorT<A, B> for Identity<A> {}
 pub fn map_i<A, B>(a: Identity<A>, f: &dyn Fn(A) -> B) -> Identity<B> {
     Identity(f(a.0))
 }
@@ -638,38 +639,36 @@ pub fn functor_identity<A, B>() -> FunctorI<A, B, Identity<A>> {
     FunctorI { map: map_i::<A, B> }
 }
 
-pub trait ApplicativeT<A, B, C, F>: TyLink<A> + TyLink<B> + TyLink<C> {}
-impl<A, B, C, F> ApplicativeT<A, B, C, F> for Identity<A> {}
-pub fn lift_a2_i<A, B, C, F>(f: F, a: Identity<A>, b: Identity<B>) -> Identity<C>
-where
-    F: Fn(A, B) -> C,
-{
+pub fn lift_a2_i<A, B, C>(f: &dyn Fn(A, B) -> C, a: Identity<A>, b: Identity<B>) -> Identity<C> {
     Identity(f(a.0, b.0))
 }
-pub struct ApplicativeI<A, B, C, F, I: ApplicativeT<A, B, C, F>>
-where
-    F: Fn(A, B) -> C,
-{
-    pub lift_a2: fn(f: F, a: R<I, A>, b: R<I, B>) -> R<I, C>,
+pub fn apply_i<A, B>(a: Identity<&dyn Fn(A) -> B>, b: Identity<A>) -> Identity<B> {
+    Identity(a.0(b.0))
 }
-pub fn applicative_identity<A, B, C, F>() -> ApplicativeI<A, B, C, F, Identity<A>>
+pub struct ApplicativeI<'a, A: 'a, B: 'a, C, M>
 where
-    F: Fn(A, B) -> C,
+    M: TyLink<A> + TyLink<B> + TyLink<C> + TyLink<&'a dyn Fn(A) -> B>,
 {
+    pub lift_a2: fn(f: &dyn Fn(A, B) -> C, a: R<M, A>, b: R<M, B>) -> R<M, C>,
+    pub apply: fn(a: R<M, &'a dyn Fn(A) -> B>, b: R<M, A>) -> R<M, B>,
+}
+pub fn applicative_identity<'a, A, B, C>() -> ApplicativeI<'a, A, B, C, Identity<A>> {
     ApplicativeI {
-        lift_a2: lift_a2_i::<A, B, C, F>,
+        lift_a2: lift_a2_i::<A, B, C>,
+        apply: apply_i::<A, B>,
     }
 }
 
-pub trait MonadT<A, B>: TyLink<A> + TyLink<B> {}
-impl<A, B> MonadT<A, B> for Identity<A> {}
 pub fn bind_i<A, B>(a: Identity<A>, f: &dyn Fn(A) -> Identity<B>) -> Identity<B> {
     f(a.0)
 }
-pub struct MonadI<A, B, I: MonadT<A, B>> {
-    pub bind: fn(a: R<I, A>, f: &dyn Fn(A) -> R<I, B>) -> R<I, B>,
-    pub pure: fn(a: A) -> R<I, A>,
-    pub map: fn(R<I, A>, f: &dyn Fn(A) -> B) -> R<I, B>,
+pub struct MonadI<A, B, M>
+where
+    M: TyLink<A> + TyLink<B>,
+{
+    pub bind: fn(a: R<M, A>, f: &dyn Fn(A) -> R<M, B>) -> R<M, B>,
+    pub pure: fn(a: A) -> R<M, A>,
+    pub map: fn(R<M, A>, f: &dyn Fn(A) -> B) -> R<M, B>,
 }
 pub fn monad_identity<A, B>() -> MonadI<A, B, Identity<A>> {
     MonadI {
@@ -681,7 +680,7 @@ pub fn monad_identity<A, B>() -> MonadI<A, B, Identity<A>> {
 // i :: Monad m => m a -> Cont (m b) a
 pub fn lift_i<'a, A, B, M>(m: MonadI<A, B, M>, ma: R<M, A>) -> Cont<'a, R<M, B>, A>
 where
-    M: MonadT<A, B> + 'a,
+    M: TyLink<A> + TyLink<B> + 'a,
     R<M, A>: 'a + Clone,
     A: Clone + 'a,
     B: Clone + 'a,
@@ -694,5 +693,5 @@ where
     A: Clone + 'a,
     B: Clone + 'a,
 {
-    lift_i(monad_identity(), ma)
+    lift_i::<'a, A, B, Identity<A>>(monad_identity(), ma)
 }
