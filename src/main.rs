@@ -272,7 +272,7 @@ where
 {
     Cont::cont(move |f| {
         let m = m.clone();
-        M::bind(m, move |a: A| f(a))
+        M::bind(m, move |a| f(a))
     })
 }
 
@@ -594,4 +594,105 @@ impl<'a, A, B> Monad<'a, A, B> for IdentityFamily {
     {
         k(a.0)
     }
+}
+
+pub trait TyImp {
+    type Imp;
+}
+pub trait TyLink<A> {
+    type Related;
+}
+type R<A, B> = <A as TyLink<B>>::Related;
+
+pub struct PureI<F: TyImp> {
+    pub pure: fn(value: F::Imp) -> F,
+}
+
+impl<A> TyImp for Identity<A> {
+    type Imp = A;
+}
+impl<A, B> TyLink<B> for Identity<A> {
+    type Related = Identity<B>;
+}
+
+pub fn pure_i<A>(a: A) -> Identity<A> {
+    Identity(a)
+}
+
+pub fn pure_identity<A>() -> PureI<Identity<A>> {
+    PureI {
+        pure: pure_i::<<Identity<A> as TyImp>::Imp>,
+    }
+}
+
+pub trait FunctorT<A, B>: TyLink<A> + TyLink<B> {}
+pub struct FunctorI<A, B, I: FunctorT<A, B>> {
+    pub map: fn(R<I, A>, f: &dyn Fn(A) -> B) -> R<I, B>,
+}
+impl<A, B> FunctorT<A, B> for Identity<A> {}
+pub fn map_i<A, B>(a: Identity<A>, f: &dyn Fn(A) -> B) -> Identity<B> {
+    Identity(f(a.0))
+}
+
+pub fn functor_identity<A, B>() -> FunctorI<A, B, Identity<A>> {
+    FunctorI { map: map_i::<A, B> }
+}
+
+pub trait ApplicativeT<A, B, C, F>: TyLink<A> + TyLink<B> + TyLink<C> {}
+impl<A, B, C, F> ApplicativeT<A, B, C, F> for Identity<A> {}
+pub fn lift_a2_i<A, B, C, F>(f: F, a: Identity<A>, b: Identity<B>) -> Identity<C>
+where
+    F: Fn(A, B) -> C,
+{
+    Identity(f(a.0, b.0))
+}
+pub struct ApplicativeI<A, B, C, F, I: ApplicativeT<A, B, C, F>>
+where
+    F: Fn(A, B) -> C,
+{
+    pub lift_a2: fn(f: F, a: R<I, A>, b: R<I, B>) -> R<I, C>,
+}
+pub fn applicative_identity<A, B, C, F>() -> ApplicativeI<A, B, C, F, Identity<A>>
+where
+    F: Fn(A, B) -> C,
+{
+    ApplicativeI {
+        lift_a2: lift_a2_i::<A, B, C, F>,
+    }
+}
+
+pub trait MonadT<A, B>: TyLink<A> + TyLink<B> {}
+impl<A, B> MonadT<A, B> for Identity<A> {}
+pub fn bind_i<A, B>(a: Identity<A>, f: &dyn Fn(A) -> Identity<B>) -> Identity<B> {
+    f(a.0)
+}
+pub struct MonadI<A, B, I: MonadT<A, B>> {
+    pub bind: fn(a: R<I, A>, f: &dyn Fn(A) -> R<I, B>) -> R<I, B>,
+    pub pure: fn(a: A) -> R<I, A>,
+    pub map: fn(R<I, A>, f: &dyn Fn(A) -> B) -> R<I, B>,
+}
+pub fn monad_identity<A, B>() -> MonadI<A, B, Identity<A>> {
+    MonadI {
+        bind: bind_i::<A, B>,
+        pure: pure_i::<A>,
+        map: map_i::<A, B>,
+    }
+}
+// i :: Monad m => m a -> Cont (m b) a
+pub fn lift_i<'a, A, B, M>(m: MonadI<A, B, M>, ma: R<M, A>) -> Cont<'a, R<M, B>, A>
+where
+    M: MonadT<A, B> + 'a,
+    R<M, A>: 'a + Clone,
+    A: Clone + 'a,
+    B: Clone + 'a,
+{
+    Cont::cont(move |f| (m.bind)(ma.clone(), &*f))
+}
+
+pub fn lift_ii<'a, A, B>(ma: Identity<A>) -> Cont<'a, Identity<B>, A>
+where
+    A: Clone + 'a,
+    B: Clone + 'a,
+{
+    lift_i(monad_identity(), ma)
 }
