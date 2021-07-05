@@ -122,9 +122,9 @@ fn ex9() {
 fn ex10() {
     // TODO: calling this identity is actually really weird...
     let ex: Cont<'_, Identity<()>, ()> = mdo! {
-        lift_i(monad_identity(), pure_i(println!("What is your name?")));
-        name <- lift_i(monad_identity(), pure_i(get_line()));
-        lift_i(monad_identity(), pure_i(println!("Merry Xmas {}", name)));
+        lift_ii(pure_i(println!("What is your name?")));
+        name <- lift_ii(pure_i(get_line()));
+        lift_ii(pure_i(println!("Merry Xmas {}", name)));
         pure ();
     };
     println!("{}", run(IdentityFamily, ex));
@@ -662,36 +662,108 @@ pub fn applicative_identity<'a, A, B, C>() -> ApplicativeI<'a, A, B, C, Identity
 pub fn bind_i<A, B>(a: Identity<A>, f: &dyn Fn(A) -> Identity<B>) -> Identity<B> {
     f(a.0)
 }
-pub struct MonadI<A, B, M>
-where
-    M: TyLink<A> + TyLink<B>,
-{
-    pub bind: fn(a: R<M, A>, f: &dyn Fn(A) -> R<M, B>) -> R<M, B>,
-    pub pure: fn(a: A) -> R<M, A>,
-    pub map: fn(R<M, A>, f: &dyn Fn(A) -> B) -> R<M, B>,
+type BindT<'a, A, B, M> = fn(a: R<M, A>, f: &dyn Fn(A) -> R<M, B>) -> R<M, B>;
+type PureT<'a, A, M> = fn(a: A) -> R<M, A>;
+type MapT<'a, A, B, M> = fn(a: R<M, A>, f: &dyn Fn(A) -> B) -> R<M, B>;
+use std::any::Any;
+pub struct MonadI<M> {
+    // These are function pointers and we ought to cast them carefully.
+    bind_p: Box<dyn Any>,
+    pure_p: Box<dyn Any>,
+    map_p: Box<dyn Any>,
+    m: std::marker::PhantomData<M>,
 }
-pub fn monad_identity<A, B>() -> MonadI<A, B, Identity<A>> {
-    MonadI {
-        bind: bind_i::<A, B>,
-        pure: pure_i::<A>,
-        map: map_i::<A, B>,
+impl<M> MonadI<M> {
+    pub fn new<A, B>(
+        bind: Box<BindT<A, B, M>>,
+        pure: Box<PureT<A, M>>,
+        map: Box<MapT<A, B, M>>,
+    ) -> Self
+    where
+        M: TyLink<A> + TyLink<B>,
+        R<M, A>: 'static,
+        R<M, B>: 'static,
+        A: 'static,
+        B: 'static,
+    {
+        MonadI {
+            bind_p: {
+                let b = bind as Box<dyn Any>;
+                assert!(b.is::<BindT<A, B, M>>());
+                b
+            },
+            pure_p: {
+                let p = pure as Box<dyn Any>;
+                assert!(p.is::<PureT<A, M>>());
+                p
+            },
+            map_p: {
+                let m = map as Box<dyn Any>;
+                assert!(m.is::<MapT<A, B, M>>());
+                m
+            },
+            m: std::marker::PhantomData,
+        }
+    }
+    pub fn bind<A, B>(&self, a: R<M, A>, f: &dyn Fn(A) -> R<M, B>) -> R<M, B>
+    where
+        M: TyLink<A> + TyLink<B>,
+        A: 'static,
+        R<M, B>: 'static,
+        R<M, A>: 'static,
+    {
+        let bind = self.bind_p.downcast_ref::<BindT<A, B, M>>().unwrap();
+        bind(a, f)
+    }
+
+    pub fn pure<A>(&self, a: A) -> R<M, A>
+    where
+        M: TyLink<A>,
+        R<M, A>: 'static,
+        A: 'static,
+    {
+        let pure = self.pure_p.downcast_ref::<&fn(a: A) -> R<M, A>>().unwrap();
+        pure(a)
+    }
+
+    pub fn map<A, B>(&self, a: R<M, A>, f: &dyn Fn(A) -> B) -> R<M, B>
+    where
+        M: TyLink<A> + TyLink<B>,
+        R<M, B>: 'static,
+        R<M, A>: 'static,
+        A: 'static,
+        B: 'static,
+    {
+        let map = self
+            .map_p
+            .downcast_ref::<&fn(a: R<M, A>, f: &dyn Fn(A) -> B) -> R<M, B>>()
+            .unwrap();
+        map(a, f)
     }
 }
+pub fn monad_identity<A: 'static, B: 'static>() -> MonadI<Identity<A>> {
+    MonadI::new(
+        Box::new(bind_i::<A, B>),
+        Box::new(pure_i::<A>),
+        Box::new(map_i::<A, B>),
+    )
+}
 // i :: Monad m => m a -> Cont (m b) a
-pub fn lift_i<'a, A, B, M>(m: MonadI<A, B, M>, ma: R<M, A>) -> Cont<'a, R<M, B>, A>
+pub fn lift_i<'a, A, B, M>(m: MonadI<M>, ma: R<M, A>) -> Cont<'a, R<M, B>, A>
 where
-    M: TyLink<A> + TyLink<B> + 'a,
-    R<M, A>: 'a + Clone,
-    A: Clone + 'a,
+    M: TyLink<A> + TyLink<B> + 'a + Clone,
+    R<M, A>: 'static + Clone,
+    R<M, B>: 'static,
+    A: Clone + 'static,
     B: Clone + 'a,
 {
-    Cont::cont(move |f| (m.bind)(ma.clone(), &*f))
+    Cont::cont(move |f| m.bind::<A, B>(ma.clone(), &*f))
 }
 
 pub fn lift_ii<'a, A, B>(ma: Identity<A>) -> Cont<'a, Identity<B>, A>
 where
-    A: Clone + 'a,
-    B: Clone + 'a,
+    A: Clone + 'static,
+    B: Clone + 'static,
 {
-    lift_i::<'a, A, B, Identity<A>>(monad_identity(), ma)
+    lift_i::<A, B, Identity<A>>(monad_identity::<A, B>(), ma)
 }
