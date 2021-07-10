@@ -134,19 +134,24 @@ fn ex11() {
     let ex: Cont<'_, _, _> = Cont::reset(mdo! {
         a <- Cont::shift(|yield_:Rc<dyn Fn(char) -> ()>| mdo!{
                 pure yield_('a');
-                //pure yield_('b');
-                //pure yield_('c');
+                let yield_ = yield_.clone();
+                pure yield_('b');
+                let yield_ = yield_.clone();
+                pure yield_('c');
+                pure yield_('d');
                 pure ();
              });
         b <- Cont::shift(move |yield_:Rc<dyn Fn(i32) -> ()>| mdo!{
                 pure yield_(1);
-                //pure yield_(2);
-                //pure yield_(3);
+                let yield_ = yield_.clone();
+                pure yield_(2);
+                pure yield_(3);
                 pure ();
              });
-        pure (println!("{:#?}", (a,b)));
+        pure print!("{:?} ", (a,b));
     });
     ex.eval_cont();
+    println!("");
 }
 
 pub fn get_line() -> String {
