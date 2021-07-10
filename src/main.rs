@@ -7,18 +7,18 @@ fn main() {
     println!("a = {}", a.clone().eval_cont());
     let b = a.fmap(|x| x + 1);
     println!("b = {}", b.clone().run_cont(|x| x));
-    let c = b.bind(|x: i32| Cont::pure(x + x));
+    let c = b.bind(&|x: i32| Cont::pure(x + x));
     println!("c = {}", c.run_cont(|x| x));
     let a = Cont::<i32, i32>::pure(1);
     let b = a.fmap(|x| x + 1);
     println!("b = {}", b.clone().eval_cont());
     let a = Cont::<i32, i32>::pure(1);
-    let b = a.bind(|x: i32| Cont::pure(x + x));
+    let b = a.bind(&|x: i32| Cont::pure(x + x));
     println!("b = {}", b.eval_cont());
     let c = call_cc(|exit1| {
         Cont::pure(1)
             .bind(move |_: i32| exit1('a'))
-            .bind(|_: i32| unimplemented!())
+            .bind(&|_: i32| unimplemented!())
     });
     println!("c = {:#?}", c.eval_cont());
     // We can also do a nested exit
@@ -38,7 +38,7 @@ fn main() {
         pure a;
     };
     println!("c = {:#?}", c.eval_cont());
-    ex10();
+    ex11();
 }
 
 #[test]
@@ -130,6 +130,25 @@ fn ex10() {
     println!("{}", run(IdentityFamily, ex));
 }
 
+fn ex11() {
+    let ex: Cont<'_, _, _> = Cont::reset(mdo! {
+        a <- Cont::shift(|yield_:Rc<dyn Fn(char) -> ()>| mdo!{
+                pure yield_('a');
+                //pure yield_('b');
+                //pure yield_('c');
+                pure ();
+             });
+        b <- Cont::shift(move |yield_:Rc<dyn Fn(i32) -> ()>| mdo!{
+                pure yield_(1);
+                //pure yield_(2);
+                //pure yield_(3);
+                pure ();
+             });
+        pure (println!("{:#?}", (a,b)));
+    });
+    ex.eval_cont();
+}
+
 pub fn get_line() -> String {
     let mut input = String::new();
     match std::io::stdin().read_line(&mut input) {
@@ -216,10 +235,26 @@ impl<'a, R, A> Cont<'a, R, A> {
     {
         (self.run)(Rc::new(f))
     }
+    pub fn shift<F>(f: F) -> Cont<'a, R, A>
+    where
+        F: Fn(Rc<dyn Fn(A) -> R + 'a>) -> Cont<'a, R, R> + 'a,
+        A: 'a,
+        R: 'a,
+    {
+        // shift f = cont (evalCont . f)
+        //         = cont (\c -> evalCont (f c))
+        Cont::cont(move |c| f(c).eval_cont())
+    }
 }
 impl<'a, R> Cont<'a, R, R> {
     pub fn eval_cont(self) -> R {
         self.run_cont(|r: R| r)
+    }
+    pub fn reset<R2>(self: Cont<'a, R, R>) -> Cont<'a, R2, R>
+    where
+        R: 'a + Clone,
+    {
+        Cont::cont(move |c| c(self.clone().eval_cont()))
     }
 }
 
@@ -442,9 +477,9 @@ macro_rules! mdo {
   };
 
   // const-bind
-  (pure $e:expr ; $($a:tt)*) => {
-    $crate::Cont::bind($crate::Cont::pure($e), move |_| mdo!($($a)*))
-  };
+  (pure $e:expr ; $($a:tt)*) => {{
+    $crate::Cont::bind($crate::Cont::pure($e), move|_| mdo!($($a)*))
+  }};
 
   // pure
   ($a:expr) => {
